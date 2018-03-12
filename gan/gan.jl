@@ -1,45 +1,28 @@
 using Flux, Flux.Data.MNIST
-using Flux: log_fast, train!, crossentropy
-using Images
-using Plots
+using Flux: log_fast, train!
 
-plot(sin)
-
+# number of training samples to use
 ns = 10000
 
-# Load data
-X = float.(hcat(vec.(MNIST.images()[1:ns])...))
+# load data and rescale between -1 and +1
+X = float32.(hcat(vec.(MNIST.images()[1:ns])...))
 X = 2X - 1
 
-n = size(X, 2)
-n_epochs = 1000
+n_epochs = 100
 batch_size = 100
 data_dim = size(X, 1)
 noise_dim = 100
 
-const eps = 1e-7
+#= the discriminator is trained over k batches for every
+   update to the generator (small k speeds up learning,
+   big k improves quality)
+=#
+k = 10
+
+# TODO: remove this definition when #145 is merged
+const EPS = 1e-7
 function binary_crossentropy(y_hat, y)
-  return -sum(y .* Flux.log_fast.(y_hat + eps) - (1.0 - y) .* Flux.log_fast.(1.0 - y_hat + eps))
-end
-
-function batchify(X, label; batch_size = 100)
-  n = size(X, 2)
-  labels = label(batch_size)
-  X = X[:, shuffle(1:n)]
-
-  [(X[:,i], labels) for i in Iterators.partition(1:n, batch_size)]
-end
-
-function samplesToImg(samples; c=10, r=10, h=28, w=28)
-  f = zeros(r*h,c*w)
-  for i=1:r, j=1:c
-    f[(i-1)*h+1:i*h,(j-1)*w+1:j*w] = reshape(samples[:,(i-1)*c+j],h,w)
-  end
-  w_min = minimum(samples)
-  w_max = maximum(samples)
-  λ = x -> (x-w_min)/(w_max-w_min)
-  map!(λ,f,f)
-  colorview(Gray,f)
+  return -sum(y .* Flux.log_fast.(y_hat + EPS) - (1.0 - y) .* Flux.log_fast.(1.0 - y_hat + EPS))
 end
 
 leaky(x) = leakyrelu(x, 0.2)
@@ -67,54 +50,42 @@ d_loss(x, y) = binary_crossentropy(D(x), y)
 g_loss(x, y) = binary_crossentropy(D(G(x)), y)
 
 # defining optimisers for discriminator and generator separately
-d_opt = ADAM(params(D), 1e-4)
-g_opt = ADAM(params(G), 1e-4)
+d_opt = SGD(params(D), 1e-5)
+g_opt = SGD(params(G), 1e-4)
 
-cbd = () -> println(d_loss(X[:, shuffle(1:batch_size)], ones(batch_size)),sum(params(D)[1].grad))
-cbg = () -> println(g_loss(randn(noise_dim, batch_size), zeros(batch_size)), sum(params(G)[1].grad))
+d_cb = () -> println("Dicriminator loss: ", d_loss(X[:, shuffle(1:batch_size)], ones(batch_size)).data)
+g_cb = () -> println("Generator loss: ", g_loss(randn(noise_dim, batch_size), zeros(batch_size)).data)
 
-k = 10
 
 for i=1:n_epochs
+  # shuffling and batchifying samples
+  X = X[:, shuffle(1:ns)]
+  labels = ones(batch_size)
+  batches = [(X[:,i], labels) for i in Iterators.partition(1:ns, batch_size)]
 
-  data = batchify(X, ones, batch_size=batch_size)
-  #generated = batchify(G(randn(noise_dim, size(X,2))), zeros, batch_size=batch_size)
-
-  # # of batches
-  m = size(data, 1)
-
-  println("Epoch $i")
+  # number of batches
+  m = size(batches, 1)
 
   for j=1:k:m
-    stop = j + k > m ? m : j + k
-    for l=j:stop
-      # training the discriminator
-      train!(d_loss, [data[l]], d_opt) #, cb = cbd)
-      dd = D(X)
-      dd_min = minimum(dd.data)
-      #println("Grad: ", sum(params(D)[1].grad))
-      train!(d_loss, batchify(G(randn(noise_dim, batch_size)).data, zeros, batch_size=batch_size), d_opt) #, cb = cbd)
-      noise = randn(noise_dim, 1000)
-      gdata = G(noise).data
-      dg = D(gdata)
-      dg_min = minimum(dg.data)
-      #println("Grad: ", sum(params(D)[1].grad))
-      println("Epoch $i Batch $l\n",
-	      "Data: ", dd_min, "\t", d_loss(data[l][1], data[l][2]),
-	      "\nGdat: ", dg_min, "\t", d_loss(gdata, zeros(size(gdata, 2))),
-	      "\nGen loss: ", g_loss(noise, ones(size(noise, 2)))
-	     )
+    # training the discriminator
+    for l=j:min(m, j + k)
+      train!(d_loss, [batches[l]], d_opt, cb = d_cb)
+
+      noise = randn(noise_dim, batch_size)
+      train!((x, y) -> -d_loss(x, y), [(G(noise).data, zeros(batch_size))], d_opt, cb = d_cb)
     end
 
     # training the generator
     noise = randn(noise_dim, batch_size)
-    train!(g_loss, batchify(noise, ones, batch_size=batch_size), g_opt) #, cb = cbg)
-
-
+    train!(g_loss, [(noise, ones(batch_size))], g_opt, cb = g_cb)
   end
-
-  samples = G(randn(noise_dim, 100)).data
-  img = samplesToImg(samples)
-  savefig(plot(img, title="Epoch $i"), "epoch$i.png")
-  #gui()
 end
+
+using Images
+
+img(x) = Gray.(reshape(x, 28, 28))
+
+samples = G(randn(noise_dim, 10)).data
+fig = hcat(img.([samples[:,i] for i=1:10]))
+
+save("samples.jpg", fig)
