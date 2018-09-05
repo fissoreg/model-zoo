@@ -1,12 +1,13 @@
 using Flux, Flux.Data.MNIST
 using Flux: binarycrossentropy, train!
+using Random
 
 # number of training samples to use
 ns = 10000
 
 # load data and rescale between -1 and +1
 X = Float32.(hcat(vec.(MNIST.images()[1:ns])...))
-X = 2X - 1
+X = 2 .* X .- 1
 
 n_epochs = 100
 batch_size = 100
@@ -22,7 +23,7 @@ k = 10
 # TODO: remove this definition when #145 is merged
 const EPS = 1e-7
 function binary_crossentropy(y_hat, y)
-  return -sum(y .* log.(y_hat + EPS) - (1.0 - y) .* log.(1.0 - y_hat + EPS))
+  return -sum(y .* log.(y_hat .+ EPS) - (1.0 .- y) .* log.(1.0 .- y_hat .+ EPS))
 end
 
 leaky(x) = leakyrelu(x, 0.2)
@@ -59,7 +60,7 @@ g_cb = () -> println("Generator loss: ", g_loss(randn(noise_dim, batch_size), ze
 
 for i=1:n_epochs
   # shuffling and batchifying samples
-  X = X[:, shuffle(1:ns)]
+  shuffle!(X) #X = X[:, shuffle(1:ns)]
   labels = ones(batch_size)
   batches = [(X[:,i], labels) for i in Iterators.partition(1:ns, batch_size)]
 
